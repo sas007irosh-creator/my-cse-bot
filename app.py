@@ -114,8 +114,15 @@ if df_fundamentals is not None and not df_market.empty:
 
     st.divider()
 
-    # 4. PROFIT CALCULATOR SECTION
-    st.subheader("💰 Investment Profit Estimator")
+    # 4. PROFIT CALCULATOR SECTION (PRO VERSION)
+    st.subheader("💰 Professional Investment Profit Estimator")
+    
+    # Define CSE Fee Structure (2026 Rates)
+    # Total Fee (1.12%) = Broker (0.64%) + CSE (0.084%) + CDS (0.024%) + SEC (0.072%) + STL (0.3%)
+    fee_base = 0.0112 
+    vat_rate = 0.18  # 18% VAT on the service fees (excluding STL)
+    service_fees = 0.0082 # The portion subject to VAT (1.12% - 0.3% STL)
+    
     calc_col1, calc_col2, calc_col3 = st.columns(3)
     
     with calc_col1:
@@ -125,20 +132,38 @@ if df_fundamentals is not None and not df_market.empty:
     with calc_col3:
         quantity = st.number_input("Number of Shares:", min_value=0, step=1)
 
-    if calc_symbol:
+    if calc_symbol and buy_price > 0 and quantity > 0:
         current_p = df_market[df_market['Symbol'] == calc_symbol]['Price'].values[0]
-        st.info(f"**Current Market Price of {calc_symbol}:** Rs. {current_p}")
         
-        if buy_price > 0 and quantity > 0:
-            investment = buy_price * quantity
-            current_value = current_p * quantity
-            profit_loss = current_value - investment
-            percentage = (profit_loss / investment) * 100
-            
-            p_col1, p_col2, p_col3 = st.columns(3)
-            p_col1.metric("Total Investment", f"Rs. {investment:,.2f}")
-            p_col2.metric("Current Value", f"Rs. {current_value:,.2f}")
-            p_col3.metric("Profit / Loss", f"Rs. {profit_loss:,.2f}", f"{percentage:.2f}%")
+        # BUY SIDE CALCULATIONS
+        gross_buy = buy_price * quantity
+        buy_fees = gross_buy * fee_base
+        buy_vat = (gross_buy * service_fees) * vat_rate
+        total_cost_to_buy = gross_buy + buy_fees + buy_vat
+        
+        # SELL SIDE CALCULATIONS (Estimate if sold at current price)
+        gross_sell = current_p * quantity
+        sell_fees = gross_sell * fee_base
+        sell_vat = (gross_sell * service_fees) * vat_rate
+        net_proceeds_from_sell = gross_sell - sell_fees - sell_vat
+        
+        # PROFIT / LOSS
+        net_profit = net_proceeds_from_sell - total_cost_to_buy
+        roi_percentage = (net_profit / total_cost_to_buy) * 100
+        
+        # DISPLAY RESULTS
+        st.markdown(f"**Live Price of {calc_symbol}:** Rs. {current_p}")
+        
+        res_col1, res_col2, res_col3 = st.columns(3)
+        res_col1.metric("Total Buying Cost", f"Rs. {total_cost_to_buy:,.2f}", help="Price + Fees + VAT")
+        res_col2.metric("Net Selling Value", f"Rs. {net_proceeds_from_sell:,.2f}", help="Market Value - Fees - VAT")
+        res_col3.metric("Realized Net Profit", f"Rs. {net_profit:,.2f}", f"{roi_percentage:.2f}%")
 
-else:
-    st.error("Missing Data: Please ensure 'fundamentals.csv' is uploaded and the CSE API is reachable.")
+        # FEE BREAKDOWN TABLE
+        with st.expander("🔍 See Fee Breakdown (CSE 2026 Standards)"):
+            breakdown_data = {
+                "Description": ["Gross Amount", "Brokerage & CSE Fees (1.12%)", f"VAT ({int(vat_rate*100)}% on Fees)", "Total Final Amount"],
+                "Buy Side (Initial)": [f"Rs. {gross_buy:,.2f}", f"Rs. {buy_fees:,.2f}", f"Rs. {buy_vat:,.2f}", f"Rs. {total_cost_to_buy:,.2f}"],
+                "Sell Side (Current)": [f"Rs. {gross_sell:,.2f}", f"Rs. {sell_fees:,.2f}", f"Rs. {sell_vat:,.2f}", f"Rs. {net_proceeds_from_sell:,.2f}"]
+            }
+            st.table(pd.DataFrame(breakdown_data))
