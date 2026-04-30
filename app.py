@@ -1,12 +1,11 @@
 import streamlit as st
 import pandas as pd
 import requests
-import streamlit.components.v1 as components
 
 # --- APP CONFIG ---
 st.set_page_config(page_title="CSE Master Analyzer", layout="wide", page_icon="📈")
 
-# Fix the CSS Error here (unsafe_allow_html)
+# Custom CSS for styling
 st.markdown("""
 <style>
     .stDataFrame { border-radius: 10px; border: 1px solid #e6e9ef; }
@@ -14,40 +13,19 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# --- CHART COMPONENT ---
-def draw_tradingview_chart(symbol, title):
-    """Embeds a live TradingView chart for the given CSE Index."""
-    st.write(f"### {title}")
-    chart_code = f"""
-    <div class="tradingview-widget-container">
-      <div id="tradingview_{symbol}"></div>
-      <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
-      <script type="text/javascript">
-      new TradingView.widget({{
-        "width": "100%", "height": 350, "symbol": "CSELK:{symbol}",
-        "interval": "D", "timezone": "Asia/Colombo", "theme": "light",
-        "style": "2", "locale": "en", "toolbar_bg": "#f1f3f6",
-        "enable_publishing": false, "hide_top_toolbar": true, "save_image": false,
-        "container_id": "tradingview_{symbol}"
-      }});
-      </script>
-    </div>
-    """
-    components.html(chart_code, height=360)
-
 # --- DATA ENGINE ---
+
 @st.cache_data(ttl=300)
-def fetch_safe_market_data():
-    """Fetches market data and safely maps columns to avoid KeyErrors."""
+def fetch_live_market():
+    """Fetches real-time market data from CSE."""
     url = "https://www.cse.lk/api/tradeSummary"
     try:
-        res = requests.post(url, timeout=10)
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        res = requests.post(url, headers=headers, timeout=10)
         df = pd.DataFrame(res.json()["reqTradeSummery"])
         
-        # Lowercase all incoming columns to prevent case-sensitivity KeyErrors
+        # Standardize columns
         df.columns = [c.lower() for c in df.columns]
-        
-        # Safe Mapping
         rename_map = {
             'symbol': 'Symbol',
             'price': 'Price',
@@ -58,114 +36,87 @@ def fetch_safe_market_data():
         }
         df = df.rename(columns=rename_map)
         
-        # Ensure numbers are treated as numbers for correct sorting
-        cols_to_fix = ['Price', 'Change (Rs)', 'Change (%)', 'Share Volume', 'Trade Volume']
-        for col in cols_to_fix:
+        # Force numeric types
+        cols = ['Price', 'Change (Rs)', 'Change (%)', 'Share Volume', 'Trade Volume']
+        for col in cols:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
-        
         return df
-    except Exception as e:
-        st.error(f"Error fetching data: {e}")
+    except:
         return pd.DataFrame()
 
-def fetch_deep_ratios(symbol, price):
-    """Extracts base metrics from CSE API and calculates advanced fundamental ratios."""
-    url = "https://www.cse.lk/api/companyInfoSummery"
+@st.cache_data
+def load_fundamental_db():
+    """Loads static quarterly data from your uploaded CSV."""
     try:
-        res = requests.post(url, json={"symbol": symbol}, timeout=5)
-        d = res.json()
-        
-        # Extract raw data from API response
-        nav = float(d.get("netAssetValue", 0) or 0)
-        eps = float(d.get("eps", 0) or 0)
-        pe = float(d.get("pe", 0) or 0)
-        dy = float(d.get("dividendYield", 0) or 0)
-        roa = float(d.get("roa", 0) or 0)
-        debt_equity = float(d.get("debtToEquity", 0) or 0)
-        
-        # Custom Fundamental Calculations
-        roe = round((eps / nav) * 100, 2) if nav > 0 else 0
-        payout = round(((dy/100) * price) / eps, 2) if eps > 0 else 0
-        
-        # Fallback for PE if missing from API
-        if pe == 0 and eps > 0:
-            pe = round(price / eps, 2)
-
-        return {
-            "NAV per Share": nav,
-            "P/E": pe,
-            "EPS": eps,
-            "Div Yield (%)": dy,
-            "Div Payout Ratio": payout,
-            "ROE (%)": roe,
-            "ROA (%)": roa,
-            "Debt/Equity": debt_equity
-        }
-    except:
-        return {k: 0 for k in ["NAV per Share", "P/E", "EPS", "Div Yield (%)", "Div Payout Ratio", "ROE (%)", "ROA (%)", "Debt/Equity"]}
+        return pd.read_csv("fundamentals.csv")
+    except FileNotFoundError:
+        st.error("⚠️ fundamentals.csv not found! Please upload it to GitHub.")
+        return pd.DataFrame()
 
 # --- UI LAYOUT ---
-st.title("🏛️ CSE Master Analysis Engine")
 
-# TOP: Market Indices
-st.subheader("📈 Market Indices")
-c1, c2 = st.columns(2)
-with c1: 
-    draw_tradingview_chart("ASPI", "All Share Price Index (ASPI)")
-with c2: 
-    draw_tradingview_chart("S&PSL20", "S&P Sri Lanka 20 Index")
+st.title("🏛️ CSE Industrial Analysis Dashboard")
 
-st.divider()
+df_market = fetch_live_market()
+df_fundamentals = load_fundamental_db()
 
-# Fetch Market Data
-df_market = fetch_safe_market_data()
-
-if not df_market.empty:
-    # MIDDLE: Live Monitor Table
-    st.subheader("📊 Live Market Monitor")
+if not df_market.empty and not df_fundamentals.empty:
     
-    # Safely select only columns that successfully loaded
-    requested_cols = ['Symbol', 'Price', 'Change (Rs)', 'Change (%)', 'Share Volume', 'Trade Volume']
-    actual_cols = [c for c in requested_cols if c in df_market.columns]
-    
-    st.dataframe(
-        df_market[actual_cols].sort_values(by='Change (%)', ascending=False), 
-        use_container_width=True
-    )
-
-    st.divider()
-
-    # BOTTOM: Deep Financial Scanner
-    st.subheader("🎯 Deep Financial Scanner")
-    st.write("Extracts and calculates fundamental ratios directly from the CSE financial statements.")
-    
+    st.subheader("🎯 Selection & Deep Analysis")
     selected = st.multiselect(
         "Select stocks to analyze:", 
         options=sorted(df_market['Symbol'].unique()), 
-        default=df_market['Symbol'].head(5).tolist()
+        default=['ABAN.N0000', 'ACL.N0000', 'AEL.N0000']
     )
 
-    if st.button("🚀 Run Full Financial Analysis"):
-        results = []
-        bar = st.progress(0)
+    if st.button("🚀 Run Full AI Analysis"):
+        # 1. Filter and Merge
+        live_data = df_market[df_market['Symbol'].isin(selected)]
+        merged_df = pd.merge(live_data, df_fundamentals, on='Symbol', how='left')
         
-        for i, sym in enumerate(selected):
-            # Grab current live price for calculations
-            price_now = float(df_market[df_market['Symbol'] == sym]['Price'].values[0])
-            
-            # Fetch and calculate ratios
-            ratios = fetch_deep_ratios(sym, price_now)
-            
-            # Combine into a single row
-            combined = {"Symbol": sym, "Price": price_now}
-            combined.update(ratios)
-            results.append(combined)
-            
-            # Update progress bar
-            bar.progress((i + 1) / len(selected))
+        # 2. Live Ratio Calculations
+        merged_df['Live P/E'] = round(merged_df['Price'] / merged_df['EPS'], 2)
+        merged_df['Live P/B'] = round(merged_df['Price'] / merged_df['NAV'], 2)
+        merged_df['Div Yield (%)'] = round((merged_df['Annual Dividend'] / merged_df['Price']) * 100, 2)
         
-        # Display final AI-generated table
-        st.dataframe(pd.DataFrame(results), use_container_width=True)
+        # 3. Create TradingView URL
+        merged_df['Chart Link'] = merged_df['Symbol'].apply(
+            lambda x: f"https://www.tradingview.com/symbols/CSELK:{x}/"
+        )
+
+        # 4. Apply Conditional Formatting (Highlighting)
+        def highlight_value(row):
+            """Returns a color list for the row based on value criteria."""
+            # Default color (None)
+            colors = [''] * len(row)
+            
+            # Green if P/E is low and P/B is under 1 (Under NAV)
+            if 0 < row['Live P/E'] < 12 and row['Live P/B'] < 1.0:
+                return ['background-color: #d4edda'] * len(row)
+            # Red if P/E is very high
+            elif row['Live P/E'] > 30:
+                return ['background-color: #f8d7da'] * len(row)
+            return colors
+
+        styled_df = merged_df.style.apply(highlight_value, axis=1)
+
+        # 5. Display with Link Configuration
+        st.dataframe(
+            styled_df,
+            column_config={
+                "Price": st.column_config.NumberColumn(format="Rs. %.2f"),
+                "Chart Link": st.column_config.LinkColumn(
+                    "TradingView Chart",
+                    display_text="View Chart 📈"
+                ),
+                "Share Volume": st.column_config.NumberColumn(format="%d"),
+            },
+            hide_index=True,
+            use_container_width=True
+        )
+        
+        st.success("✅ Analysis Complete. Green rows indicate stocks trading below NAV with a healthy P/E.")
+
 else:
-    st.warning("Data is currently unavailable from the CSE server. Please check your internet connection or refresh.")
+    st.info("Awaiting live market data and fundamentals.csv upload...")
