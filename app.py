@@ -1,93 +1,142 @@
 import streamlit as st
 import pandas as pd
 import requests
+import streamlit.components.v1 as components
 
 # --- APP CONFIG ---
-st.set_page_config(page_title="CSE AI Auto-Trader", layout="wide", page_icon="🤖")
+st.set_page_config(page_title="CSE AI Master Bot", layout="wide", page_icon="📊")
 
-st.title("🤖 CSE AI: Fully Automated Fundamental Bot")
-st.caption("Fetching live data and fundamental ratios directly from CSE.lk")
+# --- CUSTOM CSS FOR BETTER LOOK ---
+st.markdown("""
+    <style>
+    .main { background-color: #f0f2f6; }
+    .stMetric { background-color: white; padding: 20px; border-radius: 12px; border: 1px solid #e0e0e0; }
+    </style>
+    """, unsafe_allow_index=True)
 
-# --- DATA FUNCTIONS ---
+# --- DATA FETCHING (AUTOMATIC SCRAPING) ---
 
-@st.cache_data(ttl=3600) # Only refresh market list once per hour
-def get_market_summary():
-    url = "https://www.cse.lk/api/tradeSummary"
+@st.cache_data(ttl=600)
+def fetch_market_with_fundamentals():
+    """
+    Scrapes the daily trade summary and then automatically 
+    fetches fundamental ratios for each company.
+    """
+    market_url = "https://www.cse.lk/api/tradeSummary"
+    fundamentals_url = "https://www.cse.lk/api/companyInfoSummery"
+    headers = {'User-Agent': 'Mozilla/5.0'}
+    
     try:
-        response = requests.post(url, timeout=10)
-        return pd.DataFrame(response.json()["reqTradeSummery"])
-    except:
+        # 1. Get Market Prices
+        res = requests.post(market_url, timeout=10)
+        df = pd.DataFrame(res.json()["reqTradeSummery"])
+        
+        # We only take the top 50 by volume to keep the app fast
+        df = df.sort_values(by='tradevolume', ascending=False).head(50)
+        
+        # 2. Automatically Scrape Fundamentals for each stock in the list
+        fundamentals_list = []
+        for symbol in df['symbol']:
+            try:
+                f_res = requests.post(fundamentals_url, json={"symbol": symbol}, timeout=5, headers=headers)
+                f_data = f_res.json()
+                fundamentals_list.append({
+                    "symbol": symbol,
+                    "NAV": f_data.get("netAssetValue", 0),
+                    "PE": f_data.get("pe", 0),
+                    "EPS": f_data.get("eps", 0),
+                    "PBV": f_data.get("pbv", 0)
+                })
+            except:
+                fundamentals_list.append({"symbol": symbol, "NAV": 0, "PE": 0, "EPS": 0, "PBV": 0})
+        
+        f_df = pd.DataFrame(fundamentals_list)
+        final_df = pd.merge(df, f_df, on='symbol')
+        
+        # Cleaning Data Types
+        final_df['price'] = pd.to_numeric(final_df['price'], errors='coerce')
+        final_df['NAV'] = pd.to_numeric(final_df['NAV'], errors='coerce')
+        final_df['PE'] = pd.to_numeric(final_df['PE'], errors='coerce')
+        
+        return final_df
+    except Exception as e:
+        st.error(f"Failed to scrape CSE.lk: {e}")
         return pd.DataFrame()
 
-@st.cache_data(ttl=86400) # Fundamentals change slowly, so we cache for 24 hours
-def get_company_fundamentals(symbol):
-    """Fetches NAV, PE, and EPS directly from CSE for a specific stock."""
-    url = "https://www.cse.lk/api/companyInfoSummery"
-    try:
-        # We send a request for the specific company
-        response = requests.post(url, json={"symbol": symbol}, timeout=5)
-        data = response.json()
-        return {
-            "NAV": data.get("netAssetValue", 0),
-            "PE": data.get("pe", 0),
-            "EPS": data.get("eps", 0),
-            "PBV": data.get("pbv", 0)
-        }
-    except:
-        return {"NAV": 0, "PE": 0, "EPS": 0, "PBV": 0}
+# --- CHART COMPONENT ---
+def draw_tradingview_chart(symbol, title):
+    st.write(f"### {title}")
+    # Using TradingView Widget for ASPI and S&P SL20
+    # Note: ASPI = CSE:ASPI, S&P SL20 = CSE:S&PSL20
+    chart_code = f"""
+    <div class="tradingview-widget-container">
+      <div id="tradingview_{symbol}"></div>
+      <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
+      <script type="text/javascript">
+      new TradingView.widget({{
+        "width": "100%",
+        "height": 400,
+        "symbol": "CSELK:{symbol}",
+        "interval": "D",
+        "timezone": "Asia/Colombo",
+        "theme": "light",
+        "style": "3",
+        "locale": "en",
+        "toolbar_bg": "#f1f3f6",
+        "enable_publishing": false,
+        "hide_top_toolbar": true,
+        "save_image": false,
+        "container_id": "tradingview_{symbol}"
+      }});
+      </script>
+    </div>
+    """
+    components.html(chart_code, height=410)
 
-# --- MAIN LOGIC ---
+# --- APP LAYOUT ---
 
-df_market = get_market_summary()
+st.title("🏛️ CSE AI: Institutional Grade Dashboard")
 
-if not df_market.empty:
-    # 1. Cleaning the price data
-    df_market['price'] = pd.to_numeric(df_market['price'], errors='coerce')
+# Top Charts Row
+col_aspi, col_sp = st.columns(2)
+with col_aspi:
+    draw_tradingview_chart("ASPI", "ASPI Index (All Share)")
+with col_sp:
+    draw_tradingview_chart("S&PSL20", "S&P SL20 Index")
+
+st.divider()
+
+# Market Table with Automated Fundamentals
+st.header("🔥 Live Market Movers & Fundamental Ratios")
+st.write("This table automatically scrapes NAV, PE, and EPS for the highest volume stocks.")
+
+with st.spinner("Scraping live financials from CSE.lk..."):
+    full_data = fetch_market_with_fundamentals()
+
+if not full_data.empty:
+    # Adding an AI Recommendation Column
+    def ai_logic(row):
+        if row['NAV'] > 0 and row['price'] < row['NAV'] and row['PE'] < 10 and row['PE'] > 0:
+            return "💎 STRONG BUY (UNDER NAV)"
+        elif row['percentageChange'] > 2:
+            return "🚀 MOMENTUM"
+        else:
+            return "Neutral"
+
+    full_data['AI_Signal'] = full_data.apply(ai_logic, axis=1)
+
+    # Columns to display
+    display_cols = [
+        'symbol', 'name', 'price', 'percentageChange', 
+        'NAV', 'PE', 'EPS', 'AI_Signal'
+    ]
     
-    # 2. Sidebar Search
-    st.sidebar.header("Search & Analyze")
-    all_symbols = sorted(df_market['symbol'].unique())
-    selected_stock = st.sidebar.selectbox("Select a Stock to Analyze", all_symbols)
-
-    # 3. Automatic Deep-Dive for Selected Stock
-    if selected_stock:
-        with st.spinner(f'Fetching latest fundamentals for {selected_stock}...'):
-            f_data = get_company_fundamentals(selected_stock)
-            m_data = df_market[df_market['symbol'] == selected_stock].iloc[0]
-            
-            # AI Logic Calculations
-            price = m_data['price']
-            nav = float(f_data['NAV'])
-            pe = float(f_data['PE'])
-            
-            # THE AI SCOREBOARD
-            st.subheader(f"Analysis for {selected_stock} ({m_data['name']})")
-            
-            col1, col2, col3, col4 = st.columns(4)
-            col1.metric("Market Price", f"Rs. {price}")
-            col2.metric("NAV Per Share", f"Rs. {nav}")
-            col3.metric("P/E Ratio", pe)
-            col4.metric("Earnings Per Share", f"Rs. {f_data['EPS']}")
-
-            # AI RECOMMENDATION ENGINE
-            st.divider()
-            st.write("### 🤖 AI Recommendation")
-            
-            if nav > 0:
-                p_to_nav = price / nav
-                if p_to_nav < 0.8 and pe < 12 and pe > 0:
-                    st.success(f"🔥 **STRONG BUY:** This stock is trading at {int((1-p_to_nav)*100)}% discount to its assets (NAV) with a healthy P/E.")
-                elif p_to_nav < 1.0:
-                    st.info("✅ **BUY/WATCH:** Trading slightly below its asset value.")
-                else:
-                    st.warning("❄️ **HOLD/OVERVALUED:** Trading above its net asset value.")
-            else:
-                st.write("Awaiting more financial data for full recommendation.")
-
-    # 4. General Market Table
-    st.divider()
-    st.subheader("Live Market Movers")
-    st.dataframe(df_market[['symbol', 'name', 'price', 'percentageChange', 'tradevolume']].sort_values(by='tradevolume', ascending=False).head(20))
-
+    st.dataframe(
+        full_data[display_cols].sort_values(by='percentageChange', ascending=False),
+        use_container_width=True,
+        hide_index=True
+    )
 else:
-    st.error("Could not connect to CSE servers. Please check your internet or try again later.")
+    st.info("The market is currently being scanned. If it stays blank, refresh in 10 seconds.")
+
+st.info("💡 **Tip:** The 'NAV' and 'PE' columns are now scraped directly from the official CSE company profiles in real-time.")
