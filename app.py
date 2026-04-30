@@ -24,7 +24,7 @@ def fetch_live_market():
         res = requests.post(url, headers=headers, timeout=10)
         df = pd.DataFrame(res.json()["reqTradeSummery"])
         
-        # Standardize columns
+        # Standardize columns to lowercase for safe mapping
         df.columns = [c.lower() for c in df.columns]
         rename_map = {
             'symbol': 'Symbol',
@@ -47,12 +47,15 @@ def fetch_live_market():
 
 @st.cache_data
 def load_fundamental_db():
-    """Loads static quarterly data from your uploaded CSV."""
+    """Loads static quarterly data from your GitHub-uploaded CSV."""
     try:
-        return pd.read_csv("fundamentals.csv")
+        # Tries to read the file from the same folder as app.py
+        df = pd.read_csv("fundamentals.csv")
+        # Ensure Symbol is cleaned of any spaces
+        df['Symbol'] = df['Symbol'].str.strip()
+        return df
     except FileNotFoundError:
-        st.error("⚠️ fundamentals.csv not found! Please upload it to GitHub.")
-        return pd.DataFrame()
+        return None
 
 # --- UI LAYOUT ---
 
@@ -61,19 +64,37 @@ st.title("🏛️ CSE Industrial Analysis Dashboard")
 df_market = fetch_live_market()
 df_fundamentals = load_fundamental_db()
 
-if not df_market.empty and not df_fundamentals.empty:
+# Check if CSV exists
+if df_fundamentals is None:
+    st.error("❌ **fundamentals.csv NOT FOUND**")
+    st.info("""
+    **How to fix:**
+    1. Create a file named `fundamentals.csv` on your PC.
+    2. Add these columns: `Symbol,NAV,EPS,Annual Dividend,ROA,ROE,Debt to Equity`
+    3. Upload it to the **root** of your GitHub repository.
+    """)
+    st.stop()
+
+if not df_market.empty:
     
     st.subheader("🎯 Selection & Deep Analysis")
+    # Only allow selection of symbols that exist in BOTH the market and your CSV
+    common_symbols = sorted(list(set(df_market['Symbol']) & set(df_fundamentals['Symbol'])))
+    
+    if not common_symbols:
+        st.warning("⚠️ No matching symbols found between the Live Market and your fundamentals.csv. Check your CSV spelling (e.g., ABAN.N0000).")
+        st.stop()
+
     selected = st.multiselect(
         "Select stocks to analyze:", 
-        options=sorted(df_market['Symbol'].unique()), 
-        default=['ABAN.N0000', 'ACL.N0000', 'AEL.N0000']
+        options=common_symbols, 
+        default=common_symbols[:3] if len(common_symbols) > 0 else None
     )
 
     if st.button("🚀 Run Full AI Analysis"):
         # 1. Filter and Merge
         live_data = df_market[df_market['Symbol'].isin(selected)]
-        merged_df = pd.merge(live_data, df_fundamentals, on='Symbol', how='left')
+        merged_df = pd.merge(live_data, df_fundamentals, on='Symbol', how='inner')
         
         # 2. Live Ratio Calculations
         merged_df['Live P/E'] = round(merged_df['Price'] / merged_df['EPS'], 2)
@@ -85,19 +106,15 @@ if not df_market.empty and not df_fundamentals.empty:
             lambda x: f"https://www.tradingview.com/symbols/CSELK:{x}/"
         )
 
-        # 4. Apply Conditional Formatting (Highlighting)
+        # 4. Define Highlighting Logic
         def highlight_value(row):
-            """Returns a color list for the row based on value criteria."""
-            # Default color (None)
-            colors = [''] * len(row)
-            
-            # Green if P/E is low and P/B is under 1 (Under NAV)
-            if 0 < row['Live P/E'] < 12 and row['Live P/B'] < 1.0:
+            # Green if P/E < 12 AND P/B < 1.0 (Value Buy)
+            if 0 < row['Live P/E'] < 12 and 0 < row['Live P/B'] < 1.0:
                 return ['background-color: #d4edda'] * len(row)
-            # Red if P/E is very high
+            # Red if P/E > 30 (Overvalued)
             elif row['Live P/E'] > 30:
                 return ['background-color: #f8d7da'] * len(row)
-            return colors
+            return [''] * len(row)
 
         styled_df = merged_df.style.apply(highlight_value, axis=1)
 
@@ -116,7 +133,7 @@ if not df_market.empty and not df_fundamentals.empty:
             use_container_width=True
         )
         
-        st.success("✅ Analysis Complete. Green rows indicate stocks trading below NAV with a healthy P/E.")
+        st.success("✅ Analysis Complete. Green rows = Undervalued | Red rows = Overvalued")
 
 else:
-    st.info("Awaiting live market data and fundamentals.csv upload...")
+    st.info("Connecting to Colombo Stock Exchange live feed...")
