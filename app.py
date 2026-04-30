@@ -131,8 +131,7 @@ if not full_data.empty:
     
     st.dataframe(
         full_data[display_cols].sort_values(by='percentageChange', ascending=False),
-        use_container_width=True,
-        hide_index=True
+        use_container_width=True
     )
 else:
     st.warning("⚠️ Data could not be fetched. The CSE website might be down or busy. Please refresh in a moment.")
